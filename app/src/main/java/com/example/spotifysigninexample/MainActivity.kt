@@ -8,22 +8,22 @@ import com.spotify.sdk.android.authentication.AuthenticationClient
 import com.spotify.sdk.android.authentication.AuthenticationRequest
 import com.spotify.sdk.android.authentication.AuthenticationResponse
 import kotlinx.android.synthetic.main.activity_main.*
-import okhttp3.Call
-import okhttp3.Callback
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import org.json.JSONException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
-import java.io.IOException
+import java.net.URL
+import javax.net.ssl.HttpsURLConnection
 
 
 class MainActivity : AppCompatActivity() {
 
-
-    private var spotifyAccessToken: String? = null
-    private var spotifyAccessCode: String? = null
-    private var mCall: Call? = null
-    private val mOkHttpClient = OkHttpClient()
+    var id = ""
+    var displayName = ""
+    var email = ""
+    var avatar = ""
+    var accessToken = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -41,91 +41,84 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun getAuthenticationRequest(type: AuthenticationResponse.Type): AuthenticationRequest {
-        return AuthenticationRequest.Builder(
-            SpotifyConstants.CLIENT_ID,
-            type,
-            SpotifyConstants.REDIRECT_URI
-        )
+        return AuthenticationRequest.Builder(SpotifyConstants.CLIENT_ID, type, SpotifyConstants.REDIRECT_URI)
             .setShowDialog(false)
             .setScopes(arrayOf("user-read-email"))
             .build()
-    }
-
-
-    private fun fetchSpotifyUserProfile() {
-        Log.d("Status: ", "Please Wait...")
-        if (spotifyAccessToken == null) {
-            Log.i("Status: ", "Something went wrong - No Access Token found")
-            return
-        }
-
-        val request = Request.Builder()
-            .url("https://api.spotify.com/v1/me")
-            .addHeader("Authorization", "Bearer " + spotifyAccessToken!!)
-            .build()
-
-        cancelCall()
-        mCall = mOkHttpClient.newCall(request)
-
-        mCall!!.enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) {
-                Log.d("Status: ", "Failed to fetch data: $e")
-            }
-
-            @Throws(IOException::class)
-            override fun onResponse(call: Call, response: okhttp3.Response) {
-                try {
-                    val jsonObject = JSONObject(response.body!!.string())
-                    val spotifyId = jsonObject.getString("id")
-                    Log.d("Spotify Id :", spotifyId)
-                    val spotifyDisplayName = jsonObject.getString("display_name")
-                    Log.d("Spotify Display Name :", spotifyDisplayName)
-                    val spotifyEmail = jsonObject.getString("email")
-                    Log.d("Spotify Email :", spotifyEmail)
-                    val spotifyProfilePic = jsonObject.getJSONArray("images")
-                    //Check if user has Avatar
-                    var spotifyPicURL = ""
-                    if (spotifyProfilePic.length() > 0) {
-                        spotifyPicURL = spotifyProfilePic.getJSONObject(0).getString("url")
-                        Log.d("Spotify Avatar :", spotifyPicURL)
-                    }
-                    val accessToken = spotifyAccessToken
-                    Log.d("Spotify AccessToken :", accessToken ?: "")
-
-                    val myIntent = Intent(this@MainActivity, DetailsActivity::class.java)
-                    myIntent.putExtra("spotify_id", spotifyId)
-                    myIntent.putExtra("spotify_display_name", spotifyDisplayName)
-                    myIntent.putExtra("spotify_email", spotifyEmail)
-                    myIntent.putExtra("spotify_avatar", spotifyPicURL)
-                    myIntent.putExtra("spotify_access_token", accessToken)
-                    startActivity(myIntent)
-                    Log.d("Status: ", "Success get all JSON ${jsonObject.toString(3)}")
-                } catch (e: JSONException) {
-                    Log.d("Status: ", "Failed to parse data: $e")
-                }
-            }
-        })
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (SpotifyConstants.AUTH_TOKEN_REQUEST_CODE == requestCode) {
             val response = AuthenticationClient.getResponse(resultCode, data)
-            spotifyAccessToken = response.accessToken
-            fetchSpotifyUserProfile()
+            val accessToken: String? = response.accessToken
+            fetchSpotifyUserProfile(accessToken)
         }
     }
 
 
-    override fun onDestroy() {
-        cancelCall()
-        super.onDestroy()
-    }
+    private fun fetchSpotifyUserProfile(token: String?) {
+        Log.d("Status: ", "Please Wait...")
+        if (token == null) {
+            Log.i("Status: ", "Something went wrong - No Access Token found")
+            return
+        }
 
-    private fun cancelCall() {
-        if (mCall != null) {
-            mCall!!.cancel()
+        val getUserProfileURL = "https://api.spotify.com/v1/me"
+
+        GlobalScope.launch(Dispatchers.Default) {
+            val url = URL(getUserProfileURL)
+            val httpsURLConnection = withContext(Dispatchers.IO) {url.openConnection() as HttpsURLConnection}
+            httpsURLConnection.requestMethod = "GET"
+            httpsURLConnection.setRequestProperty("Authorization", "Bearer $token")
+            httpsURLConnection.doInput = true
+            httpsURLConnection.doOutput = false
+            val response = httpsURLConnection.inputStream.bufferedReader()
+                .use { it.readText() }  // defaults to UTF-8
+            withContext(Dispatchers.Main) {
+                val jsonObject = JSONObject(response)
+
+                // Spotify Id
+                val spotifyId = jsonObject.getString("id")
+                Log.d("Spotify Id :", spotifyId)
+                id = spotifyId
+
+                // Spotify Display Name
+                val spotifyDisplayName = jsonObject.getString("display_name")
+                Log.d("Spotify Display Name :", spotifyDisplayName)
+                displayName = spotifyDisplayName
+
+                // Spotify Email
+                val spotifyEmail = jsonObject.getString("email")
+                Log.d("Spotify Email :", spotifyEmail)
+                email = spotifyEmail
+
+
+                val spotifyAvatarArray = jsonObject.getJSONArray("images")
+                //Check if user has Avatar
+                var spotifyAvatarURL = ""
+                if (spotifyAvatarArray.length() > 0) {
+                    spotifyAvatarURL = spotifyAvatarArray.getJSONObject(0).getString("url")
+                    Log.d("Spotify Avatar : ", spotifyAvatarURL)
+                    avatar = spotifyAvatarURL
+                }
+
+                Log.d("Spotify AccessToken :", token)
+                accessToken = token
+
+                openDetailsActivity()
+            }
         }
     }
 
+
+    private fun openDetailsActivity() {
+        val myIntent = Intent(this@MainActivity, DetailsActivity::class.java)
+        myIntent.putExtra("spotify_id", id)
+        myIntent.putExtra("spotify_display_name", displayName)
+        myIntent.putExtra("spotify_email", email)
+        myIntent.putExtra("spotify_avatar", avatar)
+        myIntent.putExtra("spotify_access_token", accessToken)
+        startActivity(myIntent)
+    }
 }
